@@ -135,3 +135,22 @@ def get_alle_roeiers() -> list[str]:
     with get_connection() as conn:
         rows = conn.execute("SELECT naam FROM roeiers ORDER BY naam").fetchall()
         return [row["naam"] for row in rows]
+
+
+def verwijder_roeier(naam: str):
+    """Verwijder een roeier en al zijn/haar aanwezigheidsdata."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM roeiers WHERE naam = ?", (naam,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM aanwezigheid WHERE roeier_id = ?", (row["id"],))
+            conn.execute("DELETE FROM roeiers WHERE id = ?", (row["id"],))
+            conn.commit()
+
+
+def verwijder_aanwezigheid_roeier(naam: str):
+    """Verwijder alleen de aanwezigheidsdata van een roeier, niet de roeier zelf."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM roeiers WHERE naam = ?", (naam,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM aanwezigheid WHERE roeier_id = ?", (row["id"],))
+            conn.commit()

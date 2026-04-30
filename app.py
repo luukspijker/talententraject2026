@@ -7,8 +7,6 @@ from database import (
     get_aanwezigheid_roeier,
     get_overzicht_per_training,
     get_alle_roeiers,
-    verwijder_roeier,
-    verwijder_aanwezigheid_roeier,
 )
 
 st.set_page_config(
@@ -72,12 +70,9 @@ if "roeier_naam" not in st.session_state:
     st.session_state.roeier_naam = None
 if "roeier_id" not in st.session_state:
     st.session_state.roeier_id = None
-if "beheerder" not in st.session_state:
-    st.session_state.beheerder = False
 
 # --- Navigatie ---
-pagina_opties = ["📅 Mijn aanwezigheid", "👥 Groepsoverzicht", "🔒 Beheer"]
-pagina = st.sidebar.radio("Navigatie", pagina_opties)
+pagina = st.sidebar.radio("Navigatie", ["📅 Mijn aanwezigheid", "👥 Groepsoverzicht"])
 
 st.title("🚣 Roeischema")
 

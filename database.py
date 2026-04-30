@@ -58,6 +58,11 @@ def init_db():
                 tijd TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gelockte_trainingen (
+                datum TEXT PRIMARY KEY
+            )
+        """)
         # Seed de bekende uitzonderingen als ze er nog niet in staan
         for d in UITZONDERINGEN:
             conn.execute("INSERT OR IGNORE INTO uitzonderingen (datum) VALUES (?)", (d.isoformat(),))
@@ -233,4 +238,26 @@ def verwijder_extra_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
     with get_connection() as conn:
         conn.execute("DELETE FROM extra_trainingen WHERE datum = ?", (datum_str,))
+        conn.commit()
+
+
+# --- Gelockte trainingen ---
+
+def get_gelockte_trainingen() -> set:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT datum FROM gelockte_trainingen").fetchall()
+        return {date.fromisoformat(row["datum"]) for row in rows}
+
+
+def lock_training(datum):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO gelockte_trainingen (datum) VALUES (?)", (datum_str,))
+        conn.commit()
+
+
+def unlock_training(datum):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("DELETE FROM gelockte_trainingen WHERE datum = ?", (datum_str,))
         conn.commit()

@@ -47,12 +47,32 @@ def init_db():
                 FOREIGN KEY (roeier_id) REFERENCES roeiers(id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uitzonderingen (
+                datum TEXT PRIMARY KEY
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS extra_trainingen (
+                datum TEXT PRIMARY KEY,
+                tijd TEXT NOT NULL
+            )
+        """)
+        # Seed de bekende uitzonderingen als ze er nog niet in staan
+        for d in UITZONDERINGEN:
+            conn.execute("INSERT OR IGNORE INTO uitzonderingen (datum) VALUES (?)", (d.isoformat(),))
         conn.commit()
 
 
 def get_alle_trainingen() -> list[dict]:
-    """Genereer alle trainingsdatums van het hele seizoen (verleden + toekomst)."""
+    """Genereer alle trainingsdatums van het hele seizoen (verleden + toekomst),
+    inclusief extra trainingen en met uitzonderingen uit de database."""
     vandaag = date.today()
+
+    # Haal uitzonderingen en extra trainingen op uit de database
+    uitzonderingen_db = set(get_uitzonderingen())
+    extra_db = get_extra_trainingen()
+
     trainingen = []
     huidige_datum = STARTDATUM
 
@@ -60,7 +80,7 @@ def get_alle_trainingen() -> list[dict]:
         weekdag = huidige_datum.weekday()
         for dag_nr, dag_naam, tijd in TRAININGEN:
             if weekdag == dag_nr:
-                if huidige_datum not in UITZONDERINGEN:
+                if huidige_datum not in uitzonderingen_db:
                     trainingen.append({
                         "datum": huidige_datum,
                         "datum_str": huidige_datum.isoformat(),
@@ -71,6 +91,22 @@ def get_alle_trainingen() -> list[dict]:
                     })
         huidige_datum += timedelta(days=1)
 
+    # Voeg extra trainingen toe
+    extra_datums = {t["datum"] for t in trainingen}
+    for e in extra_db:
+        if e["datum"] not in extra_datums:
+            d = e["datum"]
+            dag_naam = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"][d.weekday()]
+            trainingen.append({
+                "datum": d,
+                "datum_str": d.isoformat(),
+                "dag_naam": dag_naam,
+                "tijd": e["tijd"],
+                "label": f"{dag_naam} {d.strftime('%-d %b')} – {e['tijd']}",
+                "verleden": d < vandaag,
+            })
+
+    trainingen.sort(key=lambda t: t["datum"])
     return trainingen
 
 
@@ -154,3 +190,47 @@ def verwijder_aanwezigheid_roeier(naam: str):
         if row:
             conn.execute("DELETE FROM aanwezigheid WHERE roeier_id = ?", (row["id"],))
             conn.commit()
+
+
+# --- Uitzonderingen (datums zonder training) ---
+
+def get_uitzonderingen() -> list:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT datum FROM uitzonderingen ORDER BY datum").fetchall()
+        return [date.fromisoformat(row["datum"]) for row in rows]
+
+
+def voeg_uitzondering_toe(datum):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO uitzonderingen (datum) VALUES (?)", (datum_str,))
+        conn.commit()
+
+
+def verwijder_uitzondering(datum):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("DELETE FROM uitzonderingen WHERE datum = ?", (datum_str,))
+        conn.commit()
+
+
+# --- Extra trainingen (buiten vast schema) ---
+
+def get_extra_trainingen() -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT datum, tijd FROM extra_trainingen ORDER BY datum").fetchall()
+        return [{"datum": date.fromisoformat(row["datum"]), "tijd": row["tijd"]} for row in rows]
+
+
+def voeg_extra_training_toe(datum, tijd: str):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO extra_trainingen (datum, tijd) VALUES (?, ?)", (datum_str, tijd))
+        conn.commit()
+
+
+def verwijder_extra_training(datum):
+    datum_str = datum.isoformat() if not isinstance(datum, str) else datum
+    with get_connection() as conn:
+        conn.execute("DELETE FROM extra_trainingen WHERE datum = ?", (datum_str,))
+        conn.commit()

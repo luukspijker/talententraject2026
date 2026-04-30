@@ -7,6 +7,14 @@ from database import (
     get_aanwezigheid_roeier,
     get_overzicht_per_training,
     get_alle_roeiers,
+    verwijder_roeier,
+    verwijder_aanwezigheid_roeier,
+    get_uitzonderingen,
+    voeg_uitzondering_toe,
+    verwijder_uitzondering,
+    get_extra_trainingen,
+    voeg_extra_training_toe,
+    verwijder_extra_training,
 )
 
 st.set_page_config(
@@ -15,68 +23,143 @@ st.set_page_config(
     layout="centered",
 )
 
-# Styling
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'DM Sans', sans-serif;
-    }
-    h1, h2, h3 {
-        font-family: 'DM Serif Display', serif;
-    }
-    .training-card {
-        background: #f8f7f4;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.5rem;
-        border-left: 4px solid #1a3a5c;
-    }
-    .aanwezig-badge {
-        display: inline-block;
-        background: #d4edda;
-        color: #155724;
-        border-radius: 20px;
-        padding: 2px 10px;
-        font-size: 0.8rem;
-        font-weight: 600;
-    }
-    .afwezig-badge {
-        display: inline-block;
-        background: #f8d7da;
-        color: #721c24;
-        border-radius: 20px;
-        padding: 2px 10px;
-        font-size: 0.8rem;
-        font-weight: 600;
-    }
-    .onbekend-badge {
-        display: inline-block;
-        background: #e2e3e5;
-        color: #495057;
-        border-radius: 20px;
-        padding: 2px 10px;
-        font-size: 0.8rem;
-        font-weight: 600;
-    }
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+    h1, h2, h3 { font-family: 'DM Serif Display', serif; }
 </style>
 """, unsafe_allow_html=True)
 
 init_db()
 
-# --- Sessie: naam opslaan ---
-if "roeier_naam" not in st.session_state:
-    st.session_state.roeier_naam = None
-if "roeier_id" not in st.session_state:
-    st.session_state.roeier_id = None
+# --- Sessie ---
+for key, default in [
+    ("roeier_naam", None),
+    ("roeier_id", None),
+    ("beheerder", False),
+    ("pagina", "📅 Mijn aanwezigheid"),
+    ("toast", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # --- Navigatie ---
-pagina = st.sidebar.radio("Navigatie", ["📅 Mijn aanwezigheid", "👥 Groepsoverzicht"])
+PAGINAS = ["📅 Mijn aanwezigheid", "👥 Groepsoverzicht", "🔒 Beheer"]
+pagina = st.sidebar.radio(
+    "Navigatie",
+    PAGINAS,
+    index=PAGINAS.index(st.session_state.pagina),
+    key="nav_radio",
+)
+st.session_state.pagina = pagina
 
 st.title("🚣 Roeischema")
 
-# --- Naam kiezen ---
+# Toast melding bovenaan tonen (en daarna wissen)
+if st.session_state.toast:
+    st.success(st.session_state.toast)
+    st.session_state.toast = None
+
+# ==============================
+# BEHEERPAGINA
+# ==============================
+if pagina == "🔒 Beheer":
+    st.subheader("🔒 Beheer")
+
+    if not st.session_state.beheerder:
+        wachtwoord = st.text_input("Wachtwoord", type="password")
+        if st.button("Inloggen", type="primary"):
+            if wachtwoord == "talentenhoofdcoach26":
+                st.session_state.beheerder = True
+                st.rerun()
+            else:
+                st.error("Onjuist wachtwoord.")
+        st.stop()
+
+    st.sidebar.success("✅ Beheerder ingelogd")
+    if st.sidebar.button("Uitloggen beheer"):
+        st.session_state.beheerder = False
+        st.rerun()
+
+    tab1, tab2 = st.tabs(["👤 Roeiers", "📅 Trainingen"])
+
+    with tab1:
+        st.markdown("### Roeiers verwijderen")
+        alle_roeiers = get_alle_roeiers()
+        if not alle_roeiers:
+            st.info("Er zijn nog geen roeiers.")
+        else:
+            te_verwijderen = st.selectbox("Kies een roeier", alle_roeiers, key="verwijder_selectbox")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🗑️ Verwijder roeier + data", type="primary", use_container_width=True):
+                    verwijder_roeier(te_verwijderen)
+                    st.session_state.toast = f"✅ {te_verwijderen} volledig verwijderd."
+                    st.rerun()
+            with col2:
+                if st.button("🧹 Wis alleen keuzes", use_container_width=True):
+                    verwijder_aanwezigheid_roeier(te_verwijderen)
+                    st.session_state.toast = f"✅ Keuzes van {te_verwijderen} gewist."
+                    st.rerun()
+
+    with tab2:
+        st.markdown("### Uitzonderingen (geen training)")
+        uitzonderingen = get_uitzonderingen()
+
+        if uitzonderingen:
+            for datum in sorted(uitzonderingen):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(datum.strftime("%-d %B %Y"))
+                with col2:
+                    if st.button("Verwijder", key=f"del_uit_{datum}"):
+                        verwijder_uitzondering(datum)
+                        st.rerun()
+        else:
+            st.caption("Geen uitzonderingen opgeslagen.")
+
+        nieuwe_uitzondering = st.date_input("Voeg uitzondering toe:", key="nieuwe_uitzondering")
+        if st.button("➕ Uitzondering toevoegen"):
+            voeg_uitzondering_toe(nieuwe_uitzondering)
+            st.session_state.toast = f"✅ {nieuwe_uitzondering.strftime('%-d %B')} is een vrije dag."
+            st.rerun()
+
+        st.divider()
+        st.markdown("### Extra trainingen")
+        st.caption("Trainingen buiten het vaste schema (bijv. een zaterdag).")
+        extra = get_extra_trainingen()
+
+        if extra:
+            for e in sorted(extra, key=lambda x: x["datum"]):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"{e['datum'].strftime('%-d %B %Y')} – {e['tijd']}")
+                with col2:
+                    if st.button("Verwijder", key=f"del_extra_{e['datum']}"):
+                        verwijder_extra_training(e["datum"])
+                        st.rerun()
+        else:
+            st.caption("Geen extra trainingen.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            extra_datum = st.date_input("Datum extra training:", key="extra_datum")
+        with col2:
+            extra_tijd = st.text_input("Tijd (bijv. 10:00)", key="extra_tijd")
+        if st.button("➕ Extra training toevoegen"):
+            if extra_tijd:
+                voeg_extra_training_toe(extra_datum, extra_tijd)
+                st.session_state.toast = f"✅ Extra training op {extra_datum.strftime('%-d %B')} toegevoegd."
+                st.rerun()
+            else:
+                st.warning("Vul een tijd in.")
+
+    st.stop()
+
+# ==============================
+# NAAM KIEZEN
+# ==============================
 if st.session_state.roeier_naam is None:
     st.subheader("Welkom! Wie ben jij?")
 
@@ -115,11 +198,9 @@ if pagina == "📅 Mijn aanwezigheid":
     st.subheader(f"Hallo {st.session_state.roeier_naam}! 👋")
 
     huidige_status = get_aanwezigheid_roeier(st.session_state.roeier_id)
-
     toekomstig = [t for t in trainingen if not t["verleden"]]
     verleden = [t for t in trainingen if t["verleden"]]
 
-    # --- Aankomende trainingen (bewerkbaar) ---
     st.caption("Geef hieronder aan bij welke trainingen je aanwezig bent.")
     wijzigingen = {}
 
@@ -129,7 +210,6 @@ if pagina == "📅 Mijn aanwezigheid":
         for t in toekomstig:
             datum_str = t["datum_str"]
             huidige = huidige_status.get(datum_str)
-
             col1, col2 = st.columns([3, 2])
             with col1:
                 st.markdown(f"**{t['dag_naam']}** {t['datum'].strftime('%-d %B')} &nbsp; `{t['tijd']}`", unsafe_allow_html=True)
@@ -154,30 +234,20 @@ if pagina == "📅 Mijn aanwezigheid":
                         tijd=t["tijd"],
                         aanwezig=(keuze == "Aanwezig"),
                     )
-            st.success("Opgeslagen! ✅")
+            st.session_state.pagina = "👥 Groepsoverzicht"
+            st.session_state.toast = "✅ Aanwezigheid opgeslagen!"
             st.rerun()
 
-    # --- Verleden trainingen (alleen lezen) ---
     if verleden:
         st.divider()
         with st.expander("📋 Eerdere trainingen bekijken"):
             for t in reversed(verleden):
                 datum_str = t["datum_str"]
                 huidige = huidige_status.get(datum_str)
-
-                if huidige is True:
-                    badge = "✅ Aanwezig"
-                elif huidige is False:
-                    badge = "❌ Afwezig"
-                else:
-                    badge = "— Niet opgegeven"
-
+                badge = "✅ Aanwezig" if huidige is True else ("❌ Afwezig" if huidige is False else "— Niet opgegeven")
                 col1, col2 = st.columns([3, 2])
                 with col1:
-                    st.markdown(
-                        f"<span style='color:#888'>{t['dag_naam']} {t['datum'].strftime('%-d %B')} – {t['tijd']}</span>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(f"<span style='color:#888'>{t['dag_naam']} {t['datum'].strftime('%-d %B')} – {t['tijd']}</span>", unsafe_allow_html=True)
                 with col2:
                     st.markdown(f"<span style='color:#888'>{badge}</span>", unsafe_allow_html=True)
 
@@ -198,7 +268,6 @@ elif pagina == "👥 Groepsoverzicht":
         datum_str = t["datum_str"]
         aanwezigen = overzicht.get(datum_str, [])
         aantal = len(aanwezigen)
-
         with st.expander(f"**{t['dag_naam']} {t['datum'].strftime('%-d %B')}** – {t['tijd']}  ·  {aantal} aangemeld"):
             if aanwezigen:
                 for naam in aanwezigen:

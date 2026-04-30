@@ -15,6 +15,9 @@ from database import (
     get_extra_trainingen,
     voeg_extra_training_toe,
     verwijder_extra_training,
+    get_gelockte_trainingen,
+    lock_training,
+    unlock_training,
 )
 
 st.set_page_config(
@@ -39,7 +42,6 @@ for key, default in [
     ("roeier_id", None),
     ("beheerder", False),
     ("pagina", "📅 Mijn aanwezigheid"),
-    ("toast", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -55,11 +57,6 @@ pagina = st.sidebar.radio(
 st.session_state.pagina = pagina
 
 st.title("🚣 Roeischema")
-
-# Toast melding bovenaan tonen (en daarna wissen)
-if st.session_state.toast:
-    st.success(st.session_state.toast)
-    st.session_state.toast = None
 
 # ==============================
 # BEHEERPAGINA
@@ -104,6 +101,34 @@ if pagina == "🔒 Beheer":
                     st.rerun()
 
     with tab2:
+        st.divider()
+        st.markdown("### Trainingen locken")
+        st.caption("Gelockte trainingen kunnen niet meer worden aangepast door roeiers.")
+
+        gelockt = get_gelockte_trainingen()
+        alle_trainingen = get_alle_trainingen()
+        toekomstige_trainingen = [t for t in alle_trainingen if not t["verleden"]]
+
+        if not toekomstige_trainingen:
+            st.caption("Geen aankomende trainingen.")
+        else:
+            for t in toekomstige_trainingen:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    is_gelockt = t["datum"] in gelockt
+                    label = f"🔒 {t['label']}" if is_gelockt else t["label"]
+                    st.write(label)
+                with col2:
+                    if is_gelockt:
+                        if st.button("Unlock", key=f"unlock_{t['datum_str']}"):
+                            unlock_training(t["datum"])
+                            st.rerun()
+                    else:
+                        if st.button("Lock", key=f"lock_{t['datum_str']}"):
+                            lock_training(t["datum"])
+                            st.rerun()
+
+        st.divider()
         st.markdown("### Uitzonderingen (geen training)")
         uitzonderingen = get_uitzonderingen()
 
@@ -203,6 +228,7 @@ if pagina == "📅 Mijn aanwezigheid":
 
     st.caption("Geef hieronder aan bij welke trainingen je aanwezig bent.")
     wijzigingen = {}
+    gelockt = get_gelockte_trainingen()
 
     if not toekomstig:
         st.info("Er zijn geen trainingen meer gepland.")
@@ -210,18 +236,27 @@ if pagina == "📅 Mijn aanwezigheid":
         for t in toekomstig:
             datum_str = t["datum_str"]
             huidige = huidige_status.get(datum_str)
+            is_gelockt = t["datum"] in gelockt
+
             col1, col2 = st.columns([3, 2])
             with col1:
-                st.markdown(f"**{t['dag_naam']}** {t['datum'].strftime('%-d %B')} &nbsp; `{t['tijd']}`", unsafe_allow_html=True)
+                if is_gelockt:
+                    st.markdown(f"<span style='color:#888'>**{t['dag_naam']}** {t['datum'].strftime('%-d %B')} &nbsp; `{t['tijd']}` 🔒</span>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"**{t['dag_naam']}** {t['datum'].strftime('%-d %B')} &nbsp; `{t['tijd']}`", unsafe_allow_html=True)
             with col2:
-                keuze = st.selectbox(
-                    label="status",
-                    options=["Niet opgegeven", "Aanwezig", "Afwezig"],
-                    index=0 if huidige is None else (1 if huidige else 2),
-                    key=f"keuze_{datum_str}",
-                    label_visibility="collapsed",
-                )
-                wijzigingen[datum_str] = (keuze, t)
+                if is_gelockt:
+                    badge = "✅ Aanwezig" if huidige is True else ("❌ Afwezig" if huidige is False else "— Niet opgegeven")
+                    st.markdown(f"<span style='color:#888'>{badge}</span>", unsafe_allow_html=True)
+                else:
+                    keuze = st.selectbox(
+                        label="status",
+                        options=["Niet opgegeven", "Aanwezig", "Afwezig"],
+                        index=0 if huidige is None else (1 if huidige else 2),
+                        key=f"keuze_{datum_str}",
+                        label_visibility="collapsed",
+                    )
+                    wijzigingen[datum_str] = (keuze, t)
 
         st.divider()
         if st.button("💾 Opslaan", type="primary", use_container_width=True):
@@ -234,8 +269,8 @@ if pagina == "📅 Mijn aanwezigheid":
                         tijd=t["tijd"],
                         aanwezig=(keuze == "Aanwezig"),
                     )
+            st.success("✅ Aanwezigheid opgeslagen!")
             st.session_state.pagina = "👥 Groepsoverzicht"
-            st.session_state.toast = "✅ Aanwezigheid opgeslagen!"
             st.rerun()
 
     if verleden:

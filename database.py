@@ -38,9 +38,23 @@ EINDDATUM = date(2026, 7, 1)
 
 
 # --- Connectie ---
+@st.cache_resource
+def get_pg_connection():
+    """Gecachede PostgreSQL connectie — wordt hergebruikt over reruns."""
+    return psycopg2.connect(SUPABASE_URL)
+
+
 def get_connection():
     if USE_POSTGRES:
-        return psycopg2.connect(SUPABASE_URL)
+        conn = get_pg_connection()
+        # Herstel connectie als die verbroken is
+        try:
+            conn.cursor().execute("SELECT 1")
+        except Exception:
+            conn = psycopg2.connect(SUPABASE_URL)
+            # Reset de cache
+            get_pg_connection.clear()
+        return conn
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -224,7 +238,7 @@ def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aa
                 ON CONFLICT (roeier_id, training_datum) DO UPDATE SET
                     aanwezig = EXCLUDED.aanwezig,
                     bijgewerkt_op = NOW()
-            """, (roeier_id, datum, dag_naam, tijd, int(aanwezig)))
+            """, (roeier_id, datum, dag_naam, tijd, aanwezig))
         else:
             cur.execute("""
                 INSERT INTO aanwezigheid (roeier_id, training_datum, dag_naam, tijd, aanwezig)
@@ -250,7 +264,7 @@ def get_overzicht_per_training() -> dict[str, list[str]]:
             SELECT a.training_datum, r.naam
             FROM aanwezigheid a
             JOIN roeiers r ON r.id = a.roeier_id
-            WHERE a.aanwezig = 1
+            WHERE a.aanwezig = TRUE OR a.aanwezig = 1
             ORDER BY a.training_datum, r.naam
         """)
         overzicht = {}

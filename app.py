@@ -192,10 +192,14 @@ if st.session_state.roeier_naam is None:
     bestaande_namen = get_alle_roeiers()
     optie = st.radio("", ["Ik sta al in de lijst", "Ik ben nieuw"], horizontal=True)
 
-    if optie == "Ik sta al in de lijst" and bestaande_namen:
-        naam = st.selectbox("Kies je naam", bestaande_namen)
+    if optie == "Ik sta al in de lijst":
+        if bestaande_namen:
+            naam = st.selectbox("Kies je naam", bestaande_namen, label_visibility="collapsed")
+        else:
+            st.info("Er zijn nog geen roeiers in de lijst. Kies 'Ik ben nieuw'.")
+            naam = ""
     else:
-        naam = st.text_input("Voer je naam in", placeholder="bijv. Jan de Vries")
+        naam = st.text_input("Voer je naam in", placeholder="bijv. Jan de Vries", label_visibility="collapsed")
 
     if st.button("Doorgaan →", type="primary"):
         naam = naam.strip()
@@ -227,13 +231,36 @@ if pagina == "📅 Mijn aanwezigheid":
     toekomstig = [t for t in trainingen if not t["verleden"]]
     verleden = [t for t in trainingen if t["verleden"]]
 
-    st.caption("Geef hieronder aan bij welke trainingen je aanwezig bent.")
-    wijzigingen = {}
     gelockt = get_gelockte_trainingen()
+    wijzigingen = {}
+
+    def sla_op():
+        for datum_str, (keuze, t) in wijzigingen.items():
+            if keuze != "Niet opgegeven":
+                sla_aanwezigheid_op(
+                    roeier_id=st.session_state.roeier_id,
+                    datum=datum_str,
+                    dag_naam=t["dag_naam"],
+                    tijd=t["tijd"],
+                    aanwezig=(keuze == "Aanwezig"),
+                )
+        st.session_state.opgeslagen = True
 
     if not toekomstig:
         st.info("Er zijn geen trainingen meer gepland.")
     else:
+        st.caption("Geef hieronder aan bij welke trainingen je aanwezig bent.")
+
+        if st.button("💾 Opslaan", type="primary", use_container_width=True, key="opslaan_boven"):
+            sla_op()
+            st.rerun()
+
+        if st.session_state.opgeslagen:
+            st.success("✅ Aanwezigheid opgeslagen!")
+            st.session_state.opgeslagen = False
+
+        st.divider()
+
         for t in toekomstig:
             datum_str = t["datum_str"]
             huidige = huidige_status.get(datum_str)
@@ -260,18 +287,8 @@ if pagina == "📅 Mijn aanwezigheid":
                     wijzigingen[datum_str] = (keuze, t)
 
         st.divider()
-        if st.button("💾 Opslaan", type="primary", use_container_width=True):
-            for datum_str, (keuze, t) in wijzigingen.items():
-                if keuze != "Niet opgegeven":
-                    sla_aanwezigheid_op(
-                        roeier_id=st.session_state.roeier_id,
-                        datum=datum_str,
-                        dag_naam=t["dag_naam"],
-                        tijd=t["tijd"],
-                        aanwezig=(keuze == "Aanwezig"),
-                    )
-            st.session_state.opgeslagen = True
-            st.session_state.pagina = "👥 Groepsoverzicht"
+        if st.button("💾 Opslaan", type="primary", use_container_width=True, key="opslaan_onder"):
+            sla_op()
             st.rerun()
 
     if verleden:
@@ -293,10 +310,6 @@ if pagina == "📅 Mijn aanwezigheid":
 elif pagina == "👥 Groepsoverzicht":
     st.subheader("Groepsoverzicht")
     st.caption("Wie is aangemeld voor welke training?")
-
-    if st.session_state.opgeslagen:
-        st.success("✅ Je aanwezigheid is opgeslagen!")
-        st.session_state.opgeslagen = False
 
     overzicht = get_overzicht_per_training()
 

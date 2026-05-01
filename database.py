@@ -1,10 +1,13 @@
 import os
+import sqlite3
+from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Optional
 
 # --- PostgreSQL / Supabase support ---
 try:
     import psycopg2
+    import psycopg2.extras
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
@@ -16,9 +19,6 @@ except Exception:
     SUPABASE_URL = os.environ.get("SUPABASE_URL", None)
 
 USE_POSTGRES = bool(SUPABASE_URL and PSYCOPG2_AVAILABLE)
-
-# SQLite fallback
-import sqlite3
 DB_PATH = "aanwezigheid.db"
 
 # --- Trainingsconfig ---
@@ -37,63 +37,46 @@ STARTDATUM = date(2026, 5, 4)
 EINDDATUM = date(2026, 7, 1)
 
 
-# --- Connectie pool ---
-_pool = None
+# --- Connectie: één persistente connectie per sessie via st.cache_resource ---
+@st.cache_resource
+def _cached_pg_conn():
+    conn = psycopg2.connect(SUPABASE_URL)
+    conn.autocommit = False
+    return conn
 
-def _get_pool():
-    global _pool
-    if _pool is None:
-        from psycopg2 import pool
-        _pool = pool.SimpleConnectionPool(1, 5, SUPABASE_URL)
-    return _pool
-
-
-def get_connection():
-    if USE_POSTGRES:
-        try:
-            p = _get_pool()
-            return p.getconn()
-        except Exception:
-            return psycopg2.connect(SUPABASE_URL)
-    else:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-
-def release_connection(conn):
-    if USE_POSTGRES:
-        try:
-            _get_pool().putconn(conn)
-        except Exception:
-            pass
-
-
-from contextlib import contextmanager
 
 @contextmanager
 def db_conn():
-    conn = get_connection()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        if USE_POSTGRES:
-            release_connection(conn)
-        else:
-            conn.close()
-
-
-def _rows_to_dicts(cursor):
-    """Zet cursor-resultaten altijd om naar lijst van dicts."""
-    rows = cursor.fetchall()
     if USE_POSTGRES:
-        cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, r)) for r in rows]
-    return [dict(r) for r in rows]
+        conn = _cached_pg_conn()
+        # Reset eventuele mislukte transacties
+        if conn.closed:
+            _cached_pg_conn.clear()
+            conn = _cached_pg_conn()
+        try:
+            conn.reset()
+        except Exception:
+            _cached_pg_conn.clear()
+            conn = _cached_pg_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        try:
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def _q(sql):
@@ -103,10 +86,14 @@ def _q(sql):
     return sql
 
 
+def _rows(cur):
+    rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 # --- Init ---
 def init_db():
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("""CREATE TABLE IF NOT EXISTS roeiers (
                 id SERIAL PRIMARY KEY,
@@ -154,7 +141,6 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS gelockte_trainingen (datum TEXT PRIMARY KEY)")
             for d in UITZONDERINGEN_SEED:
                 cur.execute("INSERT OR IGNORE INTO uitzonderingen (datum) VALUES (?)", (d.isoformat(),))
-        conn.commit()
 
 
 # --- Trainingen genereren ---
@@ -199,24 +185,20 @@ def get_alle_trainingen() -> list[dict]:
 
 # --- Roeiers ---
 def roeier_bestaat(naam: str) -> Optional[int]:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
-        rows = _rows_to_dicts(cur)
+        rows = _rows(cur)
         return rows[0]["id"] if rows else None
 
 
 def maak_roeier(naam: str) -> int:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("INSERT INTO roeiers (naam) VALUES (%s) RETURNING id", (naam,))
-            roeier_id = cur.fetchone()[0]
+            return cur.fetchone()["id"]
         else:
             cur.execute("INSERT INTO roeiers (naam) VALUES (?)", (naam,))
-            roeier_id = cur.lastrowid
-        conn.commit()
-        return roeier_id
+            return cur.lastrowid
 
 
 def get_of_maak_roeier(naam: str) -> int:
@@ -225,38 +207,32 @@ def get_of_maak_roeier(naam: str) -> int:
 
 
 def get_alle_roeiers() -> list[str]:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute("SELECT naam FROM roeiers ORDER BY naam")
-        return [r["naam"] for r in _rows_to_dicts(cur)]
+        return [r["naam"] for r in _rows(cur)]
 
 
 def verwijder_roeier(naam: str):
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
-        rows = _rows_to_dicts(cur)
+        rows = _rows(cur)
         if rows:
             rid = rows[0]["id"]
             cur.execute(_q("DELETE FROM aanwezigheid WHERE roeier_id = ?"), (rid,))
             cur.execute(_q("DELETE FROM roeiers WHERE id = ?"), (rid,))
-            conn.commit()
 
 
 def verwijder_aanwezigheid_roeier(naam: str):
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
-        rows = _rows_to_dicts(cur)
+        rows = _rows(cur)
         if rows:
             cur.execute(_q("DELETE FROM aanwezigheid WHERE roeier_id = ?"), (rows[0]["id"],))
-            conn.commit()
 
 
 # --- Aanwezigheid ---
 def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aanwezig: bool):
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("""
                 INSERT INTO aanwezigheid (roeier_id, training_datum, dag_naam, tijd, aanwezig)
@@ -273,19 +249,16 @@ def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aa
                     aanwezig = excluded.aanwezig,
                     bijgewerkt_op = datetime('now')
             """, (roeier_id, datum, dag_naam, tijd, int(aanwezig)))
-        conn.commit()
 
 
 def get_aanwezigheid_roeier(roeier_id: int) -> dict[str, bool]:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("SELECT training_datum, aanwezig FROM aanwezigheid WHERE roeier_id = ?"), (roeier_id,))
-        return {r["training_datum"]: bool(r["aanwezig"]) for r in _rows_to_dicts(cur)}
+        return {r["training_datum"]: bool(r["aanwezig"]) for r in _rows(cur)}
 
 
 def get_overzicht_per_training() -> dict[str, list[str]]:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute("""
             SELECT a.training_datum, r.naam
             FROM aanwezigheid a
@@ -294,87 +267,72 @@ def get_overzicht_per_training() -> dict[str, list[str]]:
             ORDER BY a.training_datum, r.naam
         """)
         overzicht = {}
-        for r in _rows_to_dicts(cur):
+        for r in _rows(cur):
             overzicht.setdefault(r["training_datum"], []).append(r["naam"])
         return overzicht
 
 
 # --- Uitzonderingen ---
 def get_uitzonderingen() -> list:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute("SELECT datum FROM uitzonderingen ORDER BY datum")
-        return [date.fromisoformat(r["datum"]) for r in _rows_to_dicts(cur)]
+        return [date.fromisoformat(r["datum"]) for r in _rows(cur)]
 
 
 def voeg_uitzondering_toe(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("INSERT INTO uitzonderingen (datum) VALUES (%s) ON CONFLICT DO NOTHING", (datum_str,))
         else:
             cur.execute("INSERT OR IGNORE INTO uitzonderingen (datum) VALUES (?)", (datum_str,))
-        conn.commit()
 
 
 def verwijder_uitzondering(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("DELETE FROM uitzonderingen WHERE datum = ?"), (datum_str,))
-        conn.commit()
 
 
 # --- Extra trainingen ---
 def get_extra_trainingen() -> list[dict]:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute("SELECT datum, tijd FROM extra_trainingen ORDER BY datum")
-        return [{"datum": date.fromisoformat(r["datum"]), "tijd": r["tijd"]} for r in _rows_to_dicts(cur)]
+        return [{"datum": date.fromisoformat(r["datum"]), "tijd": r["tijd"]} for r in _rows(cur)]
 
 
 def voeg_extra_training_toe(datum, tijd: str):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("INSERT INTO extra_trainingen (datum, tijd) VALUES (%s, %s) ON CONFLICT DO NOTHING", (datum_str, tijd))
         else:
             cur.execute("INSERT OR IGNORE INTO extra_trainingen (datum, tijd) VALUES (?, ?)", (datum_str, tijd))
-        conn.commit()
 
 
 def verwijder_extra_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("DELETE FROM extra_trainingen WHERE datum = ?"), (datum_str,))
-        conn.commit()
 
 
 # --- Gelockte trainingen ---
 def get_gelockte_trainingen() -> set:
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute("SELECT datum FROM gelockte_trainingen")
-        return {date.fromisoformat(r["datum"]) for r in _rows_to_dicts(cur)}
+        return {date.fromisoformat(r["datum"]) for r in _rows(cur)}
 
 
 def lock_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         if USE_POSTGRES:
             cur.execute("INSERT INTO gelockte_trainingen (datum) VALUES (%s) ON CONFLICT DO NOTHING", (datum_str,))
         else:
             cur.execute("INSERT OR IGNORE INTO gelockte_trainingen (datum) VALUES (?)", (datum_str,))
-        conn.commit()
 
 
 def unlock_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with db_conn() as conn:
-        cur = conn.cursor()
+    with db_conn() as cur:
         cur.execute(_q("DELETE FROM gelockte_trainingen WHERE datum = ?"), (datum_str,))
-        conn.commit()

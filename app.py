@@ -234,25 +234,22 @@ if pagina == "📅 Mijn aanwezigheid":
     gelockt = get_gelockte_trainingen()
     wijzigingen = {}
 
-    def sla_op():
-        for datum_str, (keuze, t) in wijzigingen.items():
-            if keuze != "Niet opgegeven":
-                sla_aanwezigheid_op(
-                    roeier_id=st.session_state.roeier_id,
-                    datum=datum_str,
-                    dag_naam=t["dag_naam"],
-                    tijd=t["tijd"],
-                    aanwezig=(keuze == "Aanwezig"),
-                )
-        st.session_state.opgeslagen = True
-
     if not toekomstig:
         st.info("Er zijn geen trainingen meer gepland.")
     else:
         st.caption("Geef hieronder aan bij welke trainingen je aanwezig bent.")
 
         if st.button("💾 Opslaan", type="primary", use_container_width=True, key="opslaan_boven"):
-            sla_op()
+            for datum_str, (keuze, t) in st.session_state.get("_wijzigingen", {}).items():
+                if keuze != "Niet opgegeven":
+                    sla_aanwezigheid_op(
+                        roeier_id=st.session_state.roeier_id,
+                        datum=datum_str,
+                        dag_naam=t["dag_naam"],
+                        tijd=t["tijd"],
+                        aanwezig=(keuze == "Aanwezig"),
+                    )
+            st.session_state.opgeslagen = True
             st.rerun()
 
         if st.session_state.opgeslagen:
@@ -261,7 +258,10 @@ if pagina == "📅 Mijn aanwezigheid":
 
         st.divider()
 
+        nieuwe_wijzigingen = {}
         for t in toekomstig:
+            datum_str = t["datum_str"]
+            huidige = huidige_status.get(datum_str)
             datum_str = t["datum_str"]
             huidige = huidige_status.get(datum_str)
             is_gelockt = t["datum"] in gelockt
@@ -284,11 +284,23 @@ if pagina == "📅 Mijn aanwezigheid":
                         key=f"keuze_{datum_str}",
                         label_visibility="collapsed",
                     )
-                    wijzigingen[datum_str] = (keuze, t)
+                    nieuwe_wijzigingen[datum_str] = (keuze, t)
+
+        # Sla huidige selectbox-waarden op in session_state zodat de knoppen ze kunnen lezen
+        st.session_state["_wijzigingen"] = nieuwe_wijzigingen
 
         st.divider()
         if st.button("💾 Opslaan", type="primary", use_container_width=True, key="opslaan_onder"):
-            sla_op()
+            for datum_str, (keuze, t) in st.session_state.get("_wijzigingen", {}).items():
+                if keuze != "Niet opgegeven":
+                    sla_aanwezigheid_op(
+                        roeier_id=st.session_state.roeier_id,
+                        datum=datum_str,
+                        dag_naam=t["dag_naam"],
+                        tijd=t["tijd"],
+                        aanwezig=(keuze == "Aanwezig"),
+                    )
+            st.session_state.opgeslagen = True
             st.rerun()
 
     if verleden:
@@ -312,16 +324,6 @@ elif pagina == "👥 Groepsoverzicht":
     st.caption("Wie is aangemeld voor welke training?")
 
     overzicht = get_overzicht_per_training()
-
-    # TIJDELIJKE DEBUG - verwijder later
-    with st.expander("🔍 Debug info"):
-        from database import db_conn, _rows, USE_POSTGRES as UP
-        st.write("USE_POSTGRES:", UP)
-        st.write("Roeier ID in sessie:", st.session_state.roeier_id)
-        with db_conn() as cur:
-            cur.execute("SELECT * FROM aanwezigheid")
-            st.write("Alle aanwezigheid rijen:", _rows(cur))
-        st.write("Overzicht dict:", overzicht)
 
     if not trainingen:
         st.info("Geen trainingen gepland.")

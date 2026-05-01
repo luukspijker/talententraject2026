@@ -37,28 +37,54 @@ STARTDATUM = date(2026, 5, 4)
 EINDDATUM = date(2026, 7, 1)
 
 
-# --- Connectie ---
-@st.cache_resource
-def get_pg_connection():
-    """Gecachede PostgreSQL connectie — wordt hergebruikt over reruns."""
-    return psycopg2.connect(SUPABASE_URL)
+# --- Connectie pool ---
+_pool = None
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        from psycopg2 import pool
+        _pool = pool.SimpleConnectionPool(1, 5, SUPABASE_URL)
+    return _pool
 
 
 def get_connection():
     if USE_POSTGRES:
-        conn = get_pg_connection()
-        # Herstel connectie als die verbroken is
         try:
-            conn.cursor().execute("SELECT 1")
+            p = _get_pool()
+            return p.getconn()
         except Exception:
-            conn = psycopg2.connect(SUPABASE_URL)
-            # Reset de cache
-            get_pg_connection.clear()
-        return conn
+            return psycopg2.connect(SUPABASE_URL)
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
+
+
+def release_connection(conn):
+    if USE_POSTGRES:
+        try:
+            _get_pool().putconn(conn)
+        except Exception:
+            pass
+
+
+from contextlib import contextmanager
+
+@contextmanager
+def db_conn():
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if USE_POSTGRES:
+            release_connection(conn)
+        else:
+            conn.close()
 
 
 def _rows_to_dicts(cursor):
@@ -79,7 +105,7 @@ def _q(sql):
 
 # --- Init ---
 def init_db():
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("""CREATE TABLE IF NOT EXISTS roeiers (
@@ -173,7 +199,7 @@ def get_alle_trainingen() -> list[dict]:
 
 # --- Roeiers ---
 def roeier_bestaat(naam: str) -> Optional[int]:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
         rows = _rows_to_dicts(cur)
@@ -181,7 +207,7 @@ def roeier_bestaat(naam: str) -> Optional[int]:
 
 
 def maak_roeier(naam: str) -> int:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("INSERT INTO roeiers (naam) VALUES (%s) RETURNING id", (naam,))
@@ -199,14 +225,14 @@ def get_of_maak_roeier(naam: str) -> int:
 
 
 def get_alle_roeiers() -> list[str]:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT naam FROM roeiers ORDER BY naam")
         return [r["naam"] for r in _rows_to_dicts(cur)]
 
 
 def verwijder_roeier(naam: str):
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
         rows = _rows_to_dicts(cur)
@@ -218,7 +244,7 @@ def verwijder_roeier(naam: str):
 
 
 def verwijder_aanwezigheid_roeier(naam: str):
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("SELECT id FROM roeiers WHERE naam = ?"), (naam,))
         rows = _rows_to_dicts(cur)
@@ -229,7 +255,7 @@ def verwijder_aanwezigheid_roeier(naam: str):
 
 # --- Aanwezigheid ---
 def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aanwezig: bool):
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("""
@@ -238,7 +264,7 @@ def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aa
                 ON CONFLICT (roeier_id, training_datum) DO UPDATE SET
                     aanwezig = EXCLUDED.aanwezig,
                     bijgewerkt_op = NOW()
-            """, (roeier_id, datum, dag_naam, tijd, aanwezig))
+            """, (roeier_id, datum, dag_naam, tijd, int(aanwezig)))
         else:
             cur.execute("""
                 INSERT INTO aanwezigheid (roeier_id, training_datum, dag_naam, tijd, aanwezig)
@@ -251,20 +277,20 @@ def sla_aanwezigheid_op(roeier_id: int, datum: str, dag_naam: str, tijd: str, aa
 
 
 def get_aanwezigheid_roeier(roeier_id: int) -> dict[str, bool]:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("SELECT training_datum, aanwezig FROM aanwezigheid WHERE roeier_id = ?"), (roeier_id,))
         return {r["training_datum"]: bool(r["aanwezig"]) for r in _rows_to_dicts(cur)}
 
 
 def get_overzicht_per_training() -> dict[str, list[str]]:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
             SELECT a.training_datum, r.naam
             FROM aanwezigheid a
             JOIN roeiers r ON r.id = a.roeier_id
-            WHERE a.aanwezig = TRUE OR a.aanwezig = 1
+            WHERE a.aanwezig != 0
             ORDER BY a.training_datum, r.naam
         """)
         overzicht = {}
@@ -275,7 +301,7 @@ def get_overzicht_per_training() -> dict[str, list[str]]:
 
 # --- Uitzonderingen ---
 def get_uitzonderingen() -> list:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT datum FROM uitzonderingen ORDER BY datum")
         return [date.fromisoformat(r["datum"]) for r in _rows_to_dicts(cur)]
@@ -283,7 +309,7 @@ def get_uitzonderingen() -> list:
 
 def voeg_uitzondering_toe(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("INSERT INTO uitzonderingen (datum) VALUES (%s) ON CONFLICT DO NOTHING", (datum_str,))
@@ -294,7 +320,7 @@ def voeg_uitzondering_toe(datum):
 
 def verwijder_uitzondering(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("DELETE FROM uitzonderingen WHERE datum = ?"), (datum_str,))
         conn.commit()
@@ -302,7 +328,7 @@ def verwijder_uitzondering(datum):
 
 # --- Extra trainingen ---
 def get_extra_trainingen() -> list[dict]:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT datum, tijd FROM extra_trainingen ORDER BY datum")
         return [{"datum": date.fromisoformat(r["datum"]), "tijd": r["tijd"]} for r in _rows_to_dicts(cur)]
@@ -310,7 +336,7 @@ def get_extra_trainingen() -> list[dict]:
 
 def voeg_extra_training_toe(datum, tijd: str):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("INSERT INTO extra_trainingen (datum, tijd) VALUES (%s, %s) ON CONFLICT DO NOTHING", (datum_str, tijd))
@@ -321,7 +347,7 @@ def voeg_extra_training_toe(datum, tijd: str):
 
 def verwijder_extra_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("DELETE FROM extra_trainingen WHERE datum = ?"), (datum_str,))
         conn.commit()
@@ -329,7 +355,7 @@ def verwijder_extra_training(datum):
 
 # --- Gelockte trainingen ---
 def get_gelockte_trainingen() -> set:
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT datum FROM gelockte_trainingen")
         return {date.fromisoformat(r["datum"]) for r in _rows_to_dicts(cur)}
@@ -337,7 +363,7 @@ def get_gelockte_trainingen() -> set:
 
 def lock_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         if USE_POSTGRES:
             cur.execute("INSERT INTO gelockte_trainingen (datum) VALUES (%s) ON CONFLICT DO NOTHING", (datum_str,))
@@ -348,7 +374,7 @@ def lock_training(datum):
 
 def unlock_training(datum):
     datum_str = datum.isoformat() if not isinstance(datum, str) else datum
-    with get_connection() as conn:
+    with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_q("DELETE FROM gelockte_trainingen WHERE datum = ?"), (datum_str,))
         conn.commit()

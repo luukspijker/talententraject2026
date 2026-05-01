@@ -21,7 +21,7 @@ from database import (
 )
 
 st.set_page_config(
-    page_title="Roeischema",
+    page_title="Talententraject 2026",
     page_icon="🚣",
     layout="centered",
 )
@@ -42,6 +42,7 @@ for key, default in [
     ("roeier_id", None),
     ("beheerder", False),
     ("pagina", "📅 Mijn aanwezigheid"),
+    ("opgeslagen", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -56,7 +57,7 @@ pagina = st.sidebar.radio(
 )
 st.session_state.pagina = pagina
 
-st.title("🚣 Roeischema")
+st.title("🚣 Talententraject 2026")
 
 # ==============================
 # BEHEERPAGINA
@@ -269,7 +270,7 @@ if pagina == "📅 Mijn aanwezigheid":
                         tijd=t["tijd"],
                         aanwezig=(keuze == "Aanwezig"),
                     )
-            st.success("✅ Aanwezigheid opgeslagen!")
+            st.session_state.opgeslagen = True
             st.session_state.pagina = "👥 Groepsoverzicht"
             st.rerun()
 
@@ -292,6 +293,10 @@ if pagina == "📅 Mijn aanwezigheid":
 elif pagina == "👥 Groepsoverzicht":
     st.subheader("Groepsoverzicht")
     st.caption("Wie is aangemeld voor welke training?")
+
+    if st.session_state.opgeslagen:
+        st.success("✅ Je aanwezigheid is opgeslagen!")
+        st.session_state.opgeslagen = False
 
     overzicht = get_overzicht_per_training()
 

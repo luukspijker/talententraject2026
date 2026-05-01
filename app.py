@@ -313,6 +313,16 @@ elif pagina == "👥 Groepsoverzicht":
 
     overzicht = get_overzicht_per_training()
 
+    # TIJDELIJKE DEBUG - verwijder later
+    with st.expander("🔍 Debug info"):
+        st.write("USE_POSTGRES:", USE_POSTGRES)
+        st.write("Roeier ID in sessie:", st.session_state.roeier_id)
+        from database import db_conn, _rows, _q
+        with db_conn() as cur:
+            cur.execute("SELECT * FROM aanwezigheid")
+            st.write("Alle aanwezigheid rijen:", _rows(cur))
+        st.write("Overzicht dict:", overzicht)
+
     if not trainingen:
         st.info("Geen trainingen gepland.")
         st.stop()

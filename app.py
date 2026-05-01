@@ -315,9 +315,9 @@ elif pagina == "👥 Groepsoverzicht":
 
     # TIJDELIJKE DEBUG - verwijder later
     with st.expander("🔍 Debug info"):
-        st.write("USE_POSTGRES:", USE_POSTGRES)
+        from database import db_conn, _rows, USE_POSTGRES as UP
+        st.write("USE_POSTGRES:", UP)
         st.write("Roeier ID in sessie:", st.session_state.roeier_id)
-        from database import db_conn, _rows, _q
         with db_conn() as cur:
             cur.execute("SELECT * FROM aanwezigheid")
             st.write("Alle aanwezigheid rijen:", _rows(cur))

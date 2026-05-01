@@ -37,27 +37,11 @@ STARTDATUM = date(2026, 5, 4)
 EINDDATUM = date(2026, 7, 1)
 
 
-# --- Connectie: één persistente connectie per sessie via st.cache_resource ---
-@st.cache_resource
-def _cached_pg_conn():
-    conn = psycopg2.connect(SUPABASE_URL)
-    conn.autocommit = False
-    return conn
-
-
 @contextmanager
 def db_conn():
     if USE_POSTGRES:
-        conn = _cached_pg_conn()
-        # Reset eventuele mislukte transacties
-        if conn.closed:
-            _cached_pg_conn.clear()
-            conn = _cached_pg_conn()
-        try:
-            conn.reset()
-        except Exception:
-            _cached_pg_conn.clear()
-            conn = _cached_pg_conn()
+        conn = psycopg2.connect(SUPABASE_URL)
+        conn.autocommit = False
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         try:
             yield cur
@@ -65,6 +49,8 @@ def db_conn():
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
